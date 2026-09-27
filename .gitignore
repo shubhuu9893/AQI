@@ -1,0 +1,27 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+Backend/venv/
+
+# Local configuration files
+.env
+.env.local
+config.py
+
+# IDE and editor folders
+.idea/
+.vscode/
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Pytest cache
+__pycache__/
+*.pytest_cache/

@@ -1,0 +1,15 @@
+# Byte compiled python files and cache
+__pycache__/
+.Python
+*.py[cod]
+
+# Virtualenv directories
+venv/
+ENV/
+env/
+.env
+
+# IDE / OS generated files
+*.swp
+*~
+.DS_Store
