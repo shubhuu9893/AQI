@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback, useContext } from 'react';
-import { Send, Bot, User, RotateCcw, Copy, Check, Sparkles, Wind } from 'lucide-react';
+import { Send, Bot, User, RotateCcw, Copy, Check, Sparkles, Wind, Layers } from 'lucide-react';
 import { sendAIMessage, getAISuggestions } from '../services/api';
 import { AppContext } from '../context/AppContext';
 import { formatTime } from '../utils/formatters';
+import { MessageQueue } from '../utils/MessageQueue';
 
 function TypingIndicator() {
   return (
@@ -27,8 +28,15 @@ function Message({ msg }) {
   const isUser  = msg.role === 'user';
   const [copied, setCopied] = useState(false);
 
+  // Sanitize content: strip any lingering *** or ** or ### markdown
+  const formattedContent = (msg.content || '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*{2,3}([^*]+)\*{2,3}/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/^\s*\*\s+/gm, '- ');
+
   const handleCopy = () => {
-    navigator.clipboard.writeText(msg.content).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+    navigator.clipboard.writeText(formattedContent).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
   };
 
   return (
@@ -45,7 +53,7 @@ function Message({ msg }) {
           color: isUser ? 'white' : 'var(--text-primary)',
           fontSize: 'var(--text-sm)', lineHeight: 1.65, boxShadow: 'var(--shadow-xs)',
           whiteSpace: 'pre-wrap' }}>
-          {msg.content}
+          {formattedContent}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{formatTime(msg.timestamp)}</span>
@@ -72,37 +80,73 @@ export default function AIPage() {
   const [input, setInput]       = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [error, setError]       = useState(null);
-  const suggestions             = getAISuggestions();
-  const bottomRef               = useRef(null);
-  const inputRef                = useRef(null);
+  const [queueCount, setQueueCount] = useState(0);
+
+  // Dedicated FIFO Queue instance for chat messaging (O(1) enqueue/dequeue)
+  const queueRef = useRef(new MessageQueue());
+  const isProcessingRef = useRef(false);
+
+  const suggestions = getAISuggestions();
+  const bottomRef   = useRef(null);
+  const inputRef    = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+  }, [messages, isTyping, queueCount]);
 
-  const sendMessage = useCallback(async (text) => {
-    const content = (text ?? input).trim();
-    if (!content || isTyping) return;
+  /**
+   * Queue Consumer: Processes messages strictly FIFO.
+   */
+  const processQueue = useCallback(async () => {
+    if (isProcessingRef.current || queueRef.current.isEmpty()) return;
 
-    const userMsg = { id: Date.now(), role: 'user', content, timestamp: new Date().toISOString() };
-    setMessages(prev => [...prev, userMsg]);
-    setInput('');
+    isProcessingRef.current = true;
     setIsTyping(true);
     setError(null);
 
+    // Dequeue next message in FIFO order
+    const nextItem = queueRef.current.dequeue();
+    setQueueCount(queueRef.current.size);
+
     try {
-      const aiMsg = await sendAIMessage(content, city);
+      const aiMsg = await sendAIMessage(nextItem.content, city);
       setMessages(prev => [...prev, aiMsg]);
     } catch (err) {
       setError(err.message ?? 'Failed to get response.');
-      // Remove user message optimistically if AI failed
     } finally {
+      isProcessingRef.current = false;
       setIsTyping(false);
-      inputRef.current?.focus();
+      // If items remain in queue, continue processing next one
+      if (!queueRef.current.isEmpty()) {
+        processQueue();
+      } else {
+        inputRef.current?.focus();
+      }
     }
-  }, [input, isTyping, city]);
+  }, [city]);
+
+  /**
+   * Enqueues a message into the FIFO queue and starts processing.
+   */
+  const sendMessage = useCallback((text) => {
+    const content = (text ?? input).trim();
+    if (!content) return;
+
+    // Immediately display user message in chat
+    const userMsg = { id: Date.now(), role: 'user', content, timestamp: new Date().toISOString() };
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+
+    // Enqueue message payload into MessageQueue
+    queueRef.current.enqueue({ id: userMsg.id, content });
+    setQueueCount(queueRef.current.size);
+
+    // Trigger queue processor
+    processQueue();
+  }, [input, processQueue]);
 
   const handleKey = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
+
 
   return (
     <div style={{ display: 'flex', gap: 'var(--space-4)', height: 'calc(100vh - 140px)', minHeight: 500 }}>
@@ -116,16 +160,35 @@ export default function AIPage() {
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 700, fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>AirHealth AI Assistant</div>
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--success)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--success)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--success)' }} />
-                Powered by Gemini ? Context: {city}
+                Powered by Gemini &bull; Context: {city || 'Global'}
               </div>
             </div>
-            {messages.length > 0 && (
-              <button className="btn btn-ghost btn-sm" onClick={() => setMessages([])} aria-label="Clear conversation">
-                <RotateCcw size={14} /> Clear
-              </button>
-            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {queueCount > 0 && (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  padding: '3px 8px',
+                  borderRadius: 'var(--radius-full)',
+                  background: 'rgba(14,165,233,0.15)',
+                  border: '1px solid rgba(14,165,233,0.3)',
+                  color: 'var(--primary)',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 600,
+                }} title="Messages waiting in FIFO processing queue">
+                  <Layers size={12} />
+                  <span>Queue: {queueCount}</span>
+                </div>
+              )}
+              {messages.length > 0 && (
+                <button className="btn btn-ghost btn-sm" onClick={() => { setMessages([]); queueRef.current.clear(); setQueueCount(0); }} aria-label="Clear conversation">
+                  <RotateCcw size={14} /> Clear
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Messages */}
@@ -176,7 +239,7 @@ export default function AIPage() {
                 lineHeight: 1.5, maxHeight: 120, overflowY: 'auto' }}
               onFocus={e => { e.target.style.borderColor = 'var(--border-focus)'; e.target.style.boxShadow = '0 0 0 3px rgba(14,165,233,0.12)'; }}
               onBlur={e  => { e.target.style.borderColor = 'var(--border)';       e.target.style.boxShadow = 'none'; }} />
-            <button className="btn btn-primary btn-md" onClick={() => sendMessage()} disabled={!input.trim() || isTyping}
+            <button className="btn btn-primary btn-md" onClick={() => sendMessage()} disabled={!input.trim()}
               aria-label="Send message" style={{ alignSelf: 'flex-end', padding: '10px 16px' }}>
               <Send size={16} />
             </button>
@@ -193,7 +256,7 @@ export default function AIPage() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {suggestions.map(s => (
-              <button key={s} onClick={() => sendMessage(s)} disabled={isTyping}
+              <button key={s} onClick={() => sendMessage(s)}
                 style={{ padding: '8px 10px', background: 'var(--bg-surface-2)', border: '1px solid var(--border)',
                   borderRadius: 'var(--radius-md)', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)',
                   textAlign: 'left', cursor: 'pointer', lineHeight: 1.4, transition: 'all var(--transition-fast)' }}

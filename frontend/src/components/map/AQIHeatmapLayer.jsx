@@ -1,70 +1,95 @@
 import { useEffect, useRef } from 'react';
-import { useMap } from 'react-leaflet';
+import { useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
-// Import the leaflet.heat plugin which adds `L.heatLayer` to Leaflet.
 import 'leaflet.heat';
+import { normalizeAQItoHeat, HEATMAP_GRADIENT, isValidGeoRecord } from '../../utils/aqiUtils';
 
 /**
- * React wrapper around the Leaflet Heat Layer.
- * The component receives an array of station objects and draws
- * a heatmap using their coordinates and AQI values.
+ * GlobalAQIHeatmapLayer
  *
- * It keeps a single `L.heatLayer` instance per mount and updates its data when
- * the `stations` prop changes. On unmount the layer is removed from the map.
+ * Renders a real-data AQI heatmap using leaflet.heat.
+ * - Uses real station coordinates and AQI values only (no fake/random data)
+ * - Adjusts heatmap radius dynamically based on zoom level
+ * - Only renders when there are valid geographic AQI records
+ * - Cleans up on unmount
+ *
+ * Props:
+ *   stations: Array<{ lat, lng, aqi, ... }>  – normalized station/location records
  */
-export default function AQIHeatmapLayer({ stations }) {
-  const map = useMap();
-  const heatRef = useRef(null);
+export default function GlobalAQIHeatmapLayer({ stations }) {
+  const map      = useMap();
+  const heatRef  = useRef(null);
+  const stateRef = useRef({ stations: [], zoom: map.getZoom() });
 
-  // Initialise heat layer once on mount
+  // Helper: compute heatmap options for current zoom
+  function getHeatOptions(zoom) {
+    // At world zoom (1-4): large radius, less blur – broad regional coverage
+    // At regional zoom (5-8): medium radius
+    // At city zoom (9-12): tighter radius, more precise
+    // At station zoom (13+): smallest radius, pin-level accuracy
+    if (zoom <= 4)  return { radius: 80, blur: 50,  max: 1.0, minOpacity: 0.3 };
+    if (zoom <= 6)  return { radius: 55, blur: 40,  max: 1.0, minOpacity: 0.35 };
+    if (zoom <= 8)  return { radius: 40, blur: 30,  max: 1.0, minOpacity: 0.4 };
+    if (zoom <= 10) return { radius: 30, blur: 22,  max: 1.0, minOpacity: 0.45 };
+    if (zoom <= 12) return { radius: 22, blur: 16,  max: 1.0, minOpacity: 0.5 };
+    return               { radius: 16, blur: 12,  max: 1.0, minOpacity: 0.55 };
+  }
+
+  // Convert stations to heatmap points
+  function buildPoints(stationList) {
+    return stationList
+      .filter(isValidGeoRecord)
+      .map(st => {
+        const lat = Number(st.lat ?? st.latitude);
+        const lon = Number(st.lng ?? st.lon ?? st.longitude);
+        const intensity = normalizeAQItoHeat(Number(st.aqi));
+        return [lat, lon, intensity];
+      });
+  }
+
+  // Update heat layer options without recreating it
+  function applyOptions(zoom) {
+    if (!heatRef.current) return;
+    const opts = getHeatOptions(zoom);
+    heatRef.current.setOptions(opts);
+  }
+
+  // Initialise heat layer once
   useEffect(() => {
-    if (!heatRef.current) {
-       // Create a new heat layer with options tuned for AQI visualization.
-       // Radius controls the spread of each station's influence on the map;
-       // blur smooths the transition between stations; maxZoom limits
-       // rendering at very high zoom levels.
-       const gradient = {
-         0: '#22c55e',   // Good (≤50)
-         0.2: '#eab308', // Moderate (51–100)
-         0.4: '#f97316', // USG (101–150)
-         0.6: '#ef4444', // Unhealthy (151–200)
-         0.8: '#a855f7', // Very Unhealthy (201–300)
-         1: '#9f1239',   // Hazardous (>300)
-       };
+    if (heatRef.current) return; // already initialised
+    const zoom = map.getZoom();
+    const opts = { ...getHeatOptions(zoom), gradient: HEATMAP_GRADIENT };
+    heatRef.current = L.heatLayer([], opts).addTo(map);
 
-       heatRef.current = L.heatLayer([], {
-         radius: 25,
-         blur: 20,
-         maxZoom: 17,
-         gradient,
-       }).addTo(map);
-    }
-    // Update data whenever stations change. Only include stations with
-    // complete coordinates and a numeric AQI value.
-    const normalizeAQI = aqi => {
-      // Normalize AQI to a [0,1] range based on standard thresholds.
-      if (aqi <= 50) return 0;
-      if (aqi <= 100) return 0.2;
-      if (aqi <= 150) return 0.4;
-      if (aqi <= 200) return 0.6;
-      if (aqi <= 300) return 0.8;
-      return 1; // Hazardous or beyond
-    };
-
-    const validPoints = stations
-      .filter(st => st.lat != null && st.lng != null && typeof st.aqi === 'number')
-      .map(st => [st.lat, st.lng, normalizeAQI(st.aqi)]);
-    heatRef.current.setLatLngs(validPoints);
-
-    // Clean up on unmount
     return () => {
       if (heatRef.current) {
         map.removeLayer(heatRef.current);
         heatRef.current = null;
       }
     };
-  }, [stations, map]);
+  }, [map]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // No JSX to render – the layer is directly added to the Leaflet map.
+  // Update data when stations change
+  useEffect(() => {
+    if (!heatRef.current) return;
+    const points = buildPoints(stations);
+    heatRef.current.setLatLngs(points);
+    stateRef.current.stations = stations;
+  }, [stations]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Listen to zoom events to adjust radius
+  useMapEvents({
+    zoomend() {
+      const zoom = map.getZoom();
+      stateRef.current.zoom = zoom;
+      applyOptions(zoom);
+      // Re-apply data after options change (leaflet.heat requires this)
+      if (heatRef.current) {
+        const points = buildPoints(stateRef.current.stations);
+        heatRef.current.setLatLngs(points);
+      }
+    },
+  });
+
   return null;
 }

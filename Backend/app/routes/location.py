@@ -20,6 +20,7 @@ class LocationResolveRequest(BaseModel):
 class LocationResolveResponse(BaseModel):
     city: str
     state: str
+    country: str = ""
     distance_km: float
 
 

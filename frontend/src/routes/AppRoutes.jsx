@@ -1,9 +1,11 @@
 import React, { Suspense, lazy } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import DashboardLayout from '../layouts/DashboardLayout';
-import { PageLoader } from '../components/common/LoadingSpinner';
+import ProtectedRoute  from './ProtectedRoute';
+import { PageLoader }  from '../components/common/LoadingSpinner';
 
 // Lazy-loaded pages
+const AuthPage      = lazy(() => import('../pages/Auth'));
 const Dashboard     = lazy(() => import('../pages/Dashboard'));
 const MapPage       = lazy(() => import('../pages/Map'));
 const History       = lazy(() => import('../pages/History'));
@@ -18,19 +20,25 @@ export default function AppRoutes() {
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
-        <Route element={<DashboardLayout />}>
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="dashboard"        element={<Dashboard />} />
-          <Route path="map"              element={<MapPage />} />
-          <Route path="history"          element={<History />} />
-          <Route path="health"           element={<Health />} />
-          <Route path="comparison"       element={<Comparison />} />
-          <Route path="ai"               element={<AIPage />} />
-          <Route path="settings"         element={<Settings />} />
-          <Route path="search"           element={<SearchPage />} />
-          <Route path="station/:id"      element={<StationDetails />} />
-          {/* Catch-all */}
-          <Route path="*"                element={<Navigate to="/dashboard" replace />} />
+        {/* ── Public route: Login / Sign-up ─────────────────── */}
+        <Route path="/login" element={<AuthPage />} />
+
+        {/* ── Protected routes: require authentication ──────── */}
+        <Route element={<ProtectedRoute />}>
+          <Route element={<DashboardLayout />}>
+            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route path="dashboard"        element={<Dashboard />} />
+            <Route path="map"              element={<MapPage />} />
+            <Route path="history"          element={<History />} />
+            <Route path="health"           element={<Health />} />
+            <Route path="comparison"       element={<Comparison />} />
+            <Route path="ai"               element={<AIPage />} />
+            <Route path="settings"         element={<Settings />} />
+            <Route path="search"           element={<SearchPage />} />
+            <Route path="station/:id"      element={<StationDetails />} />
+            {/* Catch-all inside protected area */}
+            <Route path="*"               element={<Navigate to="/dashboard" replace />} />
+          </Route>
         </Route>
       </Routes>
     </Suspense>

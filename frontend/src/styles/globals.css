@@ -149,6 +149,15 @@ a:hover { text-decoration: underline; }
   margin: 0 auto;
 }
 
+.page-content-map {
+  padding: 0 !important;
+  max-width: none !important;
+  margin: 0 !important;
+  height: calc(100vh - var(--navbar-height));
+  display: flex;
+  flex-direction: column;
+}
+
 /* ============================================================
    CARD
    ============================================================ */

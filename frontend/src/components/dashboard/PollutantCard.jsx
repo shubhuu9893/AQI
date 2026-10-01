@@ -14,6 +14,8 @@ const POLLUTANT_STANDARDS = {
 };
 
 function getPollutantColor(id, value) {
+  // null or undefined → neutral
+  if (value === null || value === undefined) return 'var(--text-muted)';
   const std = POLLUTANT_STANDARDS[id];
   if (!std) return 'var(--primary)';
   if (value <= std.good)     return 'var(--aqi-good)';
@@ -22,13 +24,28 @@ function getPollutantColor(id, value) {
   return 'var(--aqi-unhealthy)';
 }
 
+/**
+ * Safely format a pollutant value.
+ *   null / undefined → 'N/A'   (NOT 0 – rule from spec)
+ *   0                → '0'
+ *   number           → rounded string
+ */
+function fmtVal(v) {
+  if (v === null || v === undefined) return 'N/A';
+  if (typeof v === 'number') return v < 10 ? v.toFixed(1) : String(Math.round(v));
+  return String(v);
+}
+
 export default function PollutantCard({ pollutant, loading }) {
   if (loading) return <SkeletonCard lines={3} />;
   if (!pollutant) return null;
 
   const { id, name, value, unit, trend, sparkline } = pollutant;
-  const color = getPollutantColor(id, value);
-  const sparkData = sparkline?.map((v, i) => ({ i, v })) ?? [];
+
+  // Preserve null – do not coerce to 0
+  const displayValue = fmtVal(value);
+  const color        = getPollutantColor(id, value);
+  const sparkData    = sparkline?.map((v, i) => ({ i, v })) ?? [];
 
   const TrendIcon =
     trend > 0 ? TrendingUp :
@@ -70,19 +87,27 @@ export default function PollutantCard({ pollutant, loading }) {
             borderRadius: '50%',
             background: color,
           }}
-          title={`Status color`}
           aria-hidden="true"
         />
       </div>
 
       {/* Value */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-        <span style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1 }}>
-          {value}
+        <span
+          style={{
+            fontSize: 'var(--text-2xl)',
+            fontWeight: 800,
+            color: displayValue === 'N/A' ? 'var(--text-muted)' : 'var(--text-primary)',
+            lineHeight: 1,
+          }}
+        >
+          {displayValue}
         </span>
-        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontWeight: 500 }}>
-          {unit}
-        </span>
+        {displayValue !== 'N/A' && (
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', fontWeight: 500 }}>
+            {unit}
+          </span>
+        )}
       </div>
 
       {/* Sparkline */}

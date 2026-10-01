@@ -70,7 +70,11 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------
     @app.get("/", tags=["root"])
     async def read_root() -> dict:
-        return {"message": "AirHealth India API is running. Use /docs for Swagger UI."}
+        return {
+            "status": "ok",
+            "service": "AQI API",
+            "message": "AirHealth API is running. Use /docs for Swagger UI.",
+        }
 
     @app.on_event("startup")
     def _on_startup() -> None:

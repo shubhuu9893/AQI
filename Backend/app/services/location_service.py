@@ -11,6 +11,9 @@ from ..models.location import Location
 from ..models.monitoring_station import MonitoringStation
 from ..utils.dsa.haversine import LatLon, haversine
 
+# Maximum proximity distance to consider a local station match (100km)
+MAX_STATION_MATCH_DISTANCE_KM = 100.0
+
 
 def resolve_location(lat: float, lon: float, session: Session | None = None) -> dict[str, Any]:
     close = session is None
@@ -27,35 +30,40 @@ def resolve_location(lat: float, lon: float, session: Session | None = None) -> 
                 if d < min_distance:
                     min_distance = d
                     best_station = st
-            loc = db.query(Location).filter_by(id=best_station.location_id).one_or_none() if best_station else None
-            if loc:
-                return {
-                    "city": loc.name,
-                    "state": loc.state or "",
-                    "distance_km": round(min_distance, 1),
-                    "station_id": best_station.id,
-                }
+            if best_station and min_distance <= MAX_STATION_MATCH_DISTANCE_KM:
+                loc = db.query(Location).filter_by(id=best_station.location_id).one_or_none()
+                if loc:
+                    return {
+                        "city": loc.name,
+                        "state": loc.state or "",
+                        "country": loc.country or "",
+                        "distance_km": round(min_distance, 1),
+                        "station_id": best_station.id,
+                    }
 
         locations = db.query(Location).all()
-        if not locations:
-            return {
-                "city": "Unknown",
-                "state": "",
-                "distance_km": 0.0,
-                "station_id": None,
-            }
+        if locations:
+            best_loc = None
+            min_distance = float("inf")
+            for loc in locations:
+                d = haversine(target, LatLon(loc.latitude, loc.longitude))
+                if d < min_distance:
+                    min_distance = d
+                    best_loc = loc
+            if best_loc and min_distance <= MAX_STATION_MATCH_DISTANCE_KM:
+                return {
+                    "city": best_loc.name,
+                    "state": (best_loc.state if best_loc else "") or "",
+                    "country": (best_loc.country if best_loc else "") or "",
+                    "distance_km": round(min_distance, 1),
+                    "station_id": None,
+                }
 
-        best_loc = None
-        min_distance = float("inf")
-        for loc in locations:
-            d = haversine(target, LatLon(loc.latitude, loc.longitude))
-            if d < min_distance:
-                min_distance = d
-                best_loc = loc
         return {
-            "city": best_loc.name if best_loc else "Unknown",
-            "state": (best_loc.state if best_loc else "") or "",
-            "distance_km": round(min_distance, 1),
+            "city": "",
+            "state": "",
+            "country": "",
+            "distance_km": 0.0,
             "station_id": None,
         }
     finally:

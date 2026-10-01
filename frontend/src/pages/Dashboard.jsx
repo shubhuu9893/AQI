@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback, useContext } from 'react';
-import { RefreshCw } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
+import { RefreshCw, MapPin, Wind, AlertTriangle } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import AQIHero from '../components/dashboard/AQIHero';
 import PollutantCard from '../components/dashboard/PollutantCard';
 import WeatherCard from '../components/dashboard/WeatherCard';
@@ -9,47 +10,46 @@ import NearbyStations from '../components/dashboard/NearbyStations';
 import ErrorState from '../components/common/ErrorState';
 import { getDashboard } from '../services/api';
 import { AppContext } from '../context/AppContext';
-import { useLocation } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { DEMO_CITIES } from '../data/demoData';
 
-function getGreeting() {
+function getGreeting(name) {
   const h = new Date().getHours();
-  if (h < 12) return 'Good morning';
-  if (h < 17) return 'Good afternoon';
-  return 'Good evening';
+  const timeGreeting = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  return name ? `${timeGreeting}, ${name}` : timeGreeting;
 }
 
-// Pune default coords -- overridden by AppContext once geolocation resolves
-const DEFAULT_LAT = 18.5204;
-const DEFAULT_LON = 73.8567;
-
 export default function Dashboard() {
-  // Determine coordinates: either from context (geolocation) or from the
-  // "city" query parameter when a city is selected via Search.
-  const location = useLocation();
-  const queryParams = new URLSearchParams(location.search);
-  const cityId = queryParams.get('city');
+  const routerLocation = useLocation();
+  const navigate        = useNavigate();
+  const { location: ctxLocation, setLocationFromCity } = useContext(AppContext);
+  const { user } = useAuth() || {};
+  const firstName = user?.displayName ? user.displayName.split(' ')[0] : null;
 
-  let lat = DEFAULT_LAT;
-  let lon = DEFAULT_LON;
-  if (cityId) {
+  // -----------------------------------------------------------------------
+  // Resolve coordinates from URL query param OR context – never hardcode Pune
+  // -----------------------------------------------------------------------
+  const queryParams = new URLSearchParams(routerLocation.search);
+  const cityId      = queryParams.get('city');
+
+  // When a city param is present, sync context (handles page reload / direct URL)
+  const syncedRef = useRef(null);
+  useEffect(() => {
+    if (!cityId || syncedRef.current === cityId) return;
     const demoCity = DEMO_CITIES.find(c => c.id === cityId);
-    if (demoCity && typeof demoCity.lat === 'number' && typeof demoCity.lng === 'number') {
-      lat = demoCity.lat;
-      lon = demoCity.lng;
+    if (demoCity) {
+      setLocationFromCity(demoCity);
+      syncedRef.current = cityId;
     }
-  }
-  // Fallback to context values for initial load or when geolocation succeeds
-   const { lat: ctxLat, lon: ctxLon, locationLabel: ctxLocationLabel } = useContext(AppContext);
-  if (!cityId) {
-    // Use the context values only if a city param is not present.
-    lat = ctxLat ?? DEFAULT_LAT;
-    lon = ctxLon ?? DEFAULT_LON;
-  }
+  }, [cityId, setLocationFromCity]);
 
-  const [dashData, setDashData] = useState(null);
-  const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState(null);
+  // Use context coords (which now reflect search/geolocation/URL)
+  const lat = ctxLocation.lat;
+  const lon = ctxLocation.lon;
+
+  const [dashData,   setDashData]   = useState(null);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadData = useCallback(async (isRefresh = false) => {
@@ -57,19 +57,42 @@ export default function Dashboard() {
     else { setLoading(true); setError(null); }
 
     try {
-      // Single /api/dashboard call returns everything
       const data = await getDashboard(lat, lon);
       setDashData(data);
       setError(null);
     } catch (err) {
-      setError(err.message ?? 'Failed to load dashboard.');
+      setError(err.message ?? 'Failed to load dashboard data.');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, [lat, lon]);
 
+  // Reload when coordinates change
   useEffect(() => { loadData(); }, [loadData]);
+
+  // -----------------------------------------------------------------------
+  // Display label – prefer API-resolved location, then context label
+  // -----------------------------------------------------------------------
+  const locationLabel = dashData?.location?.city
+    ? [dashData.location.city, dashData.location.state].filter(Boolean).join(', ')
+    : ctxLocation.label || 'Global';
+
+  // -----------------------------------------------------------------------
+  // Hero data – real values only, null if not yet loaded
+  // -----------------------------------------------------------------------
+  const heroData = dashData
+    ? {
+        aqi:       dashData.aqi,
+        category:  dashData.category,
+        location:  dashData.location,
+        updatedAt: dashData.updatedAt,
+        // Pass real pollutants so hero strip shows actual values
+        pollutants: dashData.airQuality?.pollutants ?? [],
+      }
+    : null;
+
+  const isLoading = loading && !dashData;
 
   if (error && !dashData) {
     return (
@@ -81,31 +104,17 @@ export default function Dashboard() {
     );
   }
 
-  const isLoading = loading && !dashData;
-   const locationLabel = dashData?.location
-     ? `${dashData.location.city}, ${dashData.location.state}`
-     : ctxLocationLabel ?? 'India';
-
-  // Build hero card data from top-level dashboard response
-  const heroData = dashData
-    ? {
-        aqi:       dashData.aqi,
-        category:  dashData.category,
-        location:  dashData.location,
-        updatedAt: dashData.updatedAt,
-      }
-    : null;
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-6)' }}>
       {/* Page header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h2 style={{ fontSize: 'var(--text-2xl)', fontWeight: 800, color: 'var(--text-primary)', margin: 0, lineHeight: 1.2 }}>
-            {getGreeting()} 
+            {getGreeting(firstName)}
           </h2>
-          <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)', fontSize: 'var(--text-sm)' }}>
-            Air Quality Overview -- {locationLabel}
+          <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)', fontSize: 'var(--text-sm)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <MapPin size={13} style={{ flexShrink: 0, color: 'var(--primary)' }} />
+            Air Quality Overview — {locationLabel}
           </p>
         </div>
         <button
@@ -115,9 +124,21 @@ export default function Dashboard() {
           aria-label="Refresh dashboard data"
         >
           <RefreshCw size={14} style={{ animation: refreshing ? 'spin 1s linear infinite' : 'none' }} />
-          {refreshing ? 'Refreshing...' : 'Refresh'}
+          {refreshing ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
+
+      {/* Soft error banner when we have stale data + error */}
+      {error && dashData && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px',
+          background: 'var(--warning-light)', borderRadius: 'var(--radius-md)',
+          border: '1px solid var(--warning)', fontSize: 'var(--text-sm)', color: 'var(--warning-dark)',
+        }}>
+          <AlertTriangle size={15} />
+          <span>Showing cached data. {error}</span>
+        </div>
+      )}
 
       {/* AQI Hero */}
       <AQIHero data={heroData} loading={isLoading} />
@@ -144,7 +165,7 @@ export default function Dashboard() {
         <HealthRiskCard data={dashData?.healthRisk ?? null} loading={isLoading} />
       </div>
 
-      {/* AQI Trend -- passes nearest station id so charts are station-scoped */}
+      {/* AQI Trend */}
       <AQITrendChart stationId={dashData?.nearbyStations?.[0]?.id ?? null} />
 
       {/* Nearby Stations */}

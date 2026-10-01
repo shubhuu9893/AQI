@@ -1,20 +1,21 @@
 import React, { useState, useContext } from 'react';
 import {
   User, Palette, MapPin, Bell, Database, Info,
-  Save, ChevronRight,
+  Save, ChevronRight, Lock, KeyRound,
 } from 'lucide-react';
 import { ThemeContext } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { DEFAULT_SETTINGS, DEMO_CITIES } from '../data/demoData';
 import { useToast } from '../components/common/Toast';
 
 const SECTIONS = [
-  { id: 'profile',      label: 'Profile',          icon: User },
-  { id: 'appearance',   label: 'Appearance',        icon: Palette },
-  { id: 'location',     label: 'Location',          icon: MapPin },
-  { id: 'notifications',label: 'Notifications',     icon: Bell },
-  { id: 'data',         label: 'Data Preferences',  icon: Database },
-  { id: 'about',        label: 'About',             icon: Info },
+  { id: 'profile',      label: 'Profile & Security', icon: User },
+  { id: 'appearance',   label: 'Appearance',         icon: Palette },
+  { id: 'location',     label: 'Location',           icon: MapPin },
+  { id: 'notifications',label: 'Notifications',      icon: Bell },
+  { id: 'data',         label: 'Data Preferences',   icon: Database },
+  { id: 'about',        label: 'About',              icon: Info },
 ];
 
 function ToggleRow({ label, description, checked, onChange }) {
@@ -49,11 +50,73 @@ export default function Settings() {
   const [settings, setSettings] = useLocalStorage('airhealth-settings', DEFAULT_SETTINGS);
   const [activeSection, setActiveSection] = useState('profile');
 
+  const { user, isPasswordProvider, updateUserProfile, updateUserPassword } = useAuth() || {};
+  const displayName = user?.displayName || settings.profile?.name || 'User';
+  const displayEmail = user?.email || settings.profile?.email || '';
+  const initials = displayName.slice(0, 2).toUpperCase();
+
+  // State for updating profile name
+  const [profileNameInput, setProfileNameInput] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+
+  // State for updating password (for email/password users)
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordSaving, setPasswordSaving] = useState(false);
+
   const update = (section, key, value) => {
     setSettings(prev => ({
       ...prev,
       [section]: { ...prev[section], [key]: value },
     }));
+  };
+
+  const handleUpdateProfile = async (e) => {
+    e.preventDefault();
+    if (!profileNameInput.trim()) {
+      addToast('Please enter a valid name', 'error');
+      return;
+    }
+    setProfileSaving(true);
+    try {
+      if (updateUserProfile) {
+        await updateUserProfile(profileNameInput.trim());
+      }
+      update('profile', 'name', profileNameInput.trim());
+      addToast('Profile updated successfully', 'success');
+      setProfileNameInput('');
+    } catch (err) {
+      addToast(`Profile update failed: ${err.message}`, 'error');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const handleUpdatePassword = async (e) => {
+    e.preventDefault();
+    if (!newPassword || newPassword.length < 6) {
+      addToast('New password must be at least 6 characters', 'error');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      addToast('New passwords do not match', 'error');
+      return;
+    }
+    setPasswordSaving(true);
+    try {
+      if (updateUserPassword) {
+        await updateUserPassword(newPassword, currentPassword);
+      }
+      addToast('Password changed successfully', 'success');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err) {
+      addToast(`Password update failed: ${err.message}`, 'error');
+    } finally {
+      setPasswordSaving(false);
+    }
   };
 
   const save = async () => {
@@ -70,30 +133,122 @@ export default function Settings() {
     switch (activeSection) {
       case 'profile':
         return (
-          <SectionCard title="Profile">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '16px 0', borderBottom: '1px solid var(--border)' }}>
-                <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, color: 'white', fontWeight: 700, flexShrink: 0 }}>
-                  SP
+          <>
+            <SectionCard title="Profile Information">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '16px 0', borderBottom: '1px solid var(--border)' }}>
+                  <div style={{
+                    width: 64, height: 64, borderRadius: '50%',
+                    background: user?.photoURL ? 'transparent' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 22, color: 'white', fontWeight: 700, flexShrink: 0,
+                    overflow: 'hidden',
+                  }}>
+                    {user?.photoURL ? (
+                      <img src={user.photoURL} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} referrerPolicy="no-referrer" />
+                    ) : initials}
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 'var(--text-base)', color: 'var(--text-primary)' }}>{displayName}</div>
+                    <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{displayEmail}</div>
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--primary)', marginTop: 4, fontWeight: 500 }}>
+                      {isPasswordProvider ? 'Signed in with Email & Password' : 'Signed in with Google Account'}
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 'var(--text-base)', color: 'var(--text-primary)' }}>{settings.profile?.name}</div>
-                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>{settings.profile?.email}</div>
-                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 4 }}>Student</div>
-                </div>
+
+                {/* Edit Display Name */}
+                <form onSubmit={handleUpdateProfile} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div>
+                    <label className="label" htmlFor="s-name">Update Full Name</label>
+                    <input
+                      id="s-name"
+                      className="input"
+                      placeholder={displayName}
+                      value={profileNameInput}
+                      onChange={e => setProfileNameInput(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="label">Registered Email</label>
+                    <input className="input" value={displayEmail} disabled style={{ opacity: 0.7, cursor: 'not-allowed' }} />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                    <button
+                      type="submit"
+                      className="btn btn-primary btn-sm"
+                      disabled={profileSaving || !profileNameInput.trim()}
+                    >
+                      {profileSaving ? 'Saving…' : 'Update Profile Name'}
+                    </button>
+                  </div>
+                </form>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <div>
-                  <label className="label" htmlFor="s-name">Full Name</label>
-                  <input id="s-name" className="input" value={settings.profile?.name ?? ''} onChange={e => update('profile', 'name', e.target.value)} />
+            </SectionCard>
+
+            {/* Change Password Card - Shown when user uses email/password */}
+            {isPasswordProvider ? (
+              <SectionCard title="Update Password">
+                <form onSubmit={handleUpdatePassword} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', margin: 0 }}>
+                    Since your account was created with email and password, you can change your password below.
+                  </p>
+                  <div>
+                    <label className="label" htmlFor="s-cur-pass">Current Password (optional)</label>
+                    <input
+                      id="s-cur-pass"
+                      type="password"
+                      className="input"
+                      placeholder="••••••••"
+                      value={currentPassword}
+                      onChange={e => setCurrentPassword(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="s-new-pass">New Password (min. 6 characters)</label>
+                    <input
+                      id="s-new-pass"
+                      type="password"
+                      className="input"
+                      placeholder="••••••••"
+                      value={newPassword}
+                      onChange={e => setNewPassword(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="s-confirm-pass">Confirm New Password</label>
+                    <input
+                      id="s-confirm-pass"
+                      type="password"
+                      className="input"
+                      placeholder="••••••••"
+                      value={confirmPassword}
+                      onChange={e => setConfirmPassword(e.target.value)}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                    <button
+                      type="submit"
+                      className="btn btn-primary btn-sm"
+                      disabled={passwordSaving || !newPassword}
+                    >
+                      <Lock size={14} style={{ marginRight: 6 }} />
+                      {passwordSaving ? 'Updating…' : 'Update Password'}
+                    </button>
+                  </div>
+                </form>
+              </SectionCard>
+            ) : (
+              <SectionCard title="Security & Authentication">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', background: 'var(--bg-surface-2)', borderRadius: 'var(--radius-md)' }}>
+                  <KeyRound size={20} color="var(--primary)" style={{ flexShrink: 0 }} />
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    Your account is authenticated via <strong>Google Sign-In</strong>. Passwords and two-factor authentication are securely managed through your Google Account.
+                  </div>
                 </div>
-                <div>
-                  <label className="label" htmlFor="s-email">Email</label>
-                  <input id="s-email" type="email" className="input" value={settings.profile?.email ?? ''} onChange={e => update('profile', 'email', e.target.value)} />
-                </div>
-              </div>
-            </div>
-          </SectionCard>
+              </SectionCard>
+            )}
+          </>
         );
 
       case 'appearance':

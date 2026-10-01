@@ -59,6 +59,11 @@ def get_air_quality(lat: float, lon: float) -> dict[str, Any]:
     openaq = get_openaq_measurement(lat, lon)
     merged = _merge(live, openaq)
 
+    # Enrich with OpenWeatherMap real-time pollutants if missing
+    from .owm_pollution_service import get_owm_air_pollution
+    owm = get_owm_air_pollution(lat, lon)
+    merged = _merge(merged, owm)
+
     if all(v is None for v in merged.values()):
         stored = latest_air_quality_near(lat, lon)
         if stored:

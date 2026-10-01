@@ -16,6 +16,7 @@ import {
   User,
 } from 'lucide-react';
 import { ThemeContext } from '../../context/ThemeContext';
+import { useAuth } from '../../context/AuthContext';
 import Tooltip from '../common/Tooltip';
 
 const NAV_SECTIONS = [
@@ -50,6 +51,8 @@ const NAV_SECTIONS = [
 
 export default function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }) {
   const location = useLocation();
+  const { user } = useAuth() || {};
+
 
   const isActive = path =>
     path === '/dashboard'
@@ -257,22 +260,31 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose
                 width: 32,
                 height: 32,
                 borderRadius: '50%',
-                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                background: user?.photoURL ? 'transparent' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 flexShrink: 0,
+                overflow: 'hidden',
               }}
               aria-hidden="true"
             >
-              <User size={16} color="white" />
+              {user?.photoURL ? (
+                <img src={user.photoURL} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} referrerPolicy="no-referrer" />
+              ) : (
+                <span style={{ fontSize: 11, color: 'white', fontWeight: 700 }}>
+                  {user?.displayName ? user.displayName.slice(0, 2).toUpperCase() : user?.email?.slice(0, 2).toUpperCase() ?? 'U'}
+                </span>
+              )}
             </div>
             {!collapsed && (
-              <div className="sidebar-user-info" style={{ overflow: 'hidden' }}>
+              <div className="sidebar-user-info" style={{ overflow: 'hidden', minWidth: 0 }}>
                 <div style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--sidebar-text-active)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  Shubham Patil
+                  {user?.displayName || user?.email?.split('@')[0] || 'User'}
                 </div>
-                <div style={{ fontSize: 10, color: 'var(--sidebar-text)', opacity: 0.6 }}>Student</div>
+                <div style={{ fontSize: 10, color: 'var(--sidebar-text)', opacity: 0.7, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {user?.email || 'Logged In'}
+                </div>
               </div>
             )}
           </div>

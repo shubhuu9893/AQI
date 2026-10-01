@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from '../components/layout/Sidebar';
 import Navbar from '../components/layout/Navbar';
 import BottomNav from '../components/layout/BottomNav';
@@ -7,6 +7,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useResponsive } from '../hooks/useResponsive';
 
 export default function DashboardLayout() {
+  const routerLocation = useLocation();
   const { isMobile, isTablet } = useResponsive();
 
   // Sidebar collapsed state persisted
@@ -59,7 +60,7 @@ export default function DashboardLayout() {
           isRefreshing={isRefreshing}
         />
 
-        <main className="page-content">
+        <main className={`page-content ${routerLocation.pathname === '/map' ? 'page-content-map' : ''}`}>
           <Outlet />
         </main>
       </div>

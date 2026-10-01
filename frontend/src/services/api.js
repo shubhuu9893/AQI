@@ -1,11 +1,13 @@
 /**
- * AirHealth India -- Service Layer
+ * AirHealth – Global AQI Service Layer
  * All API calls go through this file.
  * Base URL is read from VITE_API_URL in .env.local
+ *
+ * This service is geography-agnostic: it accepts any lat/lon and works globally.
  */
 
 import axios from 'axios';
-import { getAQICategory } from '../data/demoData';
+import { getAQICategory } from '../utils/aqiUtils';
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
@@ -27,9 +29,7 @@ http.interceptors.response.use(
   }
 );
 
-// Default Pune coords used when caller provides no location
-const DEFAULT_LAT = 18.5204;
-const DEFAULT_LON = 73.8567;
+// No hardcoded city defaults – callers must supply real coordinates.
 
 // -------------------------------------------------------------
 // Health check
@@ -42,7 +42,7 @@ export async function checkHealth() {
 // -------------------------------------------------------------
 // Dashboard  GET /api/dashboard?latitude=&longitude=
 // -------------------------------------------------------------
-export async function getDashboard(lat = DEFAULT_LAT, lon = DEFAULT_LON) {
+export async function getDashboard(lat, lon) {
   const { data } = await http.get('/dashboard', { params: { latitude: lat, longitude: lon } });
 
   const aq  = data.air_quality  ?? {};
@@ -53,7 +53,7 @@ export async function getDashboard(lat = DEFAULT_LAT, lon = DEFAULT_LON) {
   return {
     aqi:       aq.aqi ?? null,
     category:  getAQICategory(aq.aqi ?? 0),
-    location:  { city: loc.city ?? '--', state: loc.state ?? '--', country: 'India' },
+    location:  { city: loc.city ?? '--', state: loc.state ?? '--', country: loc.country ?? '' },
     updatedAt: new Date().toISOString(),
     airQuality:        normAirQuality(aq),
     weather:           normWeather(wx),
@@ -66,9 +66,34 @@ export async function getDashboard(lat = DEFAULT_LAT, lon = DEFAULT_LON) {
 // -------------------------------------------------------------
 // Air Quality  GET /api/air_quality?lat=&lon=
 // -------------------------------------------------------------
-export async function getAirQuality(lat = DEFAULT_LAT, lon = DEFAULT_LON) {
+export async function getAirQuality(lat, lon) {
   const { data } = await http.get('/air_quality', { params: { lat, lon } });
   return normAirQuality(data);
+}
+
+// -------------------------------------------------------------
+// Global Regions / Areas AQI  GET /api/air_quality/regions
+// -------------------------------------------------------------
+export async function getRegionsAQI(macroRegion = null) {
+  const params = macroRegion && macroRegion !== 'All' ? { region: macroRegion } : {};
+  const { data } = await http.get('/air_quality/regions', { params });
+  return (data ?? []).map(r => ({
+    id:          r.id,
+    name:        r.name,
+    macroRegion: r.macro_region,
+    country:     r.country,
+    lat:         r.latitude,
+    lng:         r.longitude,
+    aqi:         r.aqi != null ? Math.round(r.aqi) : null,
+    pm25:        r.pm25 != null ? Math.round(r.pm25) : null,
+    pm10:        r.pm10 != null ? Math.round(r.pm10) : null,
+    no2:         r.no2  != null ? Math.round(r.no2) : null,
+    so2:         r.so2  != null ? Math.round(r.so2) : null,
+    co:          r.co   != null ? Math.round(r.co * 10) / 10 : null,
+    o3:          r.o3   != null ? Math.round(r.o3) : null,
+    category:    getAQICategory(r.aqi),
+    isRegion:    true,
+  }));
 }
 
 // -------------------------------------------------------------
@@ -104,7 +129,7 @@ export async function getAQITrend(period = '7d', stationId = null) {
 // -------------------------------------------------------------
 // Weather  GET /api/weather?lat=&lon=
 // -------------------------------------------------------------
-export async function getWeather(lat = DEFAULT_LAT, lon = DEFAULT_LON) {
+export async function getWeather(lat, lon) {
   const { data } = await http.get('/weather', { params: { lat, lon } });
   return normWeather(data);
 }
@@ -127,8 +152,10 @@ export async function getHealthImpacts() {
 
 // -------------------------------------------------------------
 // Stations  GET /api/stations/nearby?latitude=&longitude=&radiusKm=
+// lat/lon must be supplied by the caller. No hardcoded default location.
 // -------------------------------------------------------------
-export async function getStations({ lat = DEFAULT_LAT, lon = DEFAULT_LON, radiusKm = 50 } = {}) {
+export async function getStations({ lat, lon, radiusKm = 50 } = {}) {
+  if (lat == null || lon == null) return [];
   const { data } = await http.get('/stations/nearby', {
     params: { latitude: lat, longitude: lon, radiusKm },
   });
@@ -136,12 +163,16 @@ export async function getStations({ lat = DEFAULT_LAT, lon = DEFAULT_LON, radius
 }
 
 // -------------------------------------------------------------
-// Station by ID -- fetches from nearby list + attaches trend data
+// Station by ID -- direct endpoint lookup + attaches trend data
 // -------------------------------------------------------------
 export async function getStationById(id) {
-  const stations = await getStations({ radiusKm: 500 });
-  const station  = stations.find(s => s.id === id);
-  if (!station) throw new Error("Station '" + id + "' not found");
+  let station;
+  try {
+    const { data } = await http.get(`/stations/${id}`);
+    station = normStation(data);
+  } catch {
+    throw new Error("Station '" + id + "' not found");
+  }
 
   const [trend24h, trend7d] = await Promise.all([
     getAQITrend('24h', id).catch(() => []),
@@ -182,15 +213,47 @@ export async function getHistory(filters = {}) {
 }
 
 // -------------------------------------------------------------
-// Cities -- static list (no /cities endpoint on backend)
+// Cities -- global list + Nominatim geocoding fallback
 // -------------------------------------------------------------
 export async function getCities(query) {
   const { DEMO_CITIES } = await import('../data/demoData');
   if (!query) return DEMO_CITIES;
-  const q = query.toLowerCase();
-  return DEMO_CITIES.filter(
-    c => c.name.toLowerCase().includes(q) || c.state.toLowerCase().includes(q)
+  const q = query.toLowerCase().trim();
+
+  // First: filter from the curated global city list
+  const local = DEMO_CITIES.filter(
+    c =>
+      c.name.toLowerCase().includes(q) ||
+      (c.state  || '').toLowerCase().includes(q) ||
+      (c.country || '').toLowerCase().includes(q)
   );
+
+  // If we have good local results, return them (up to 12)
+  if (local.length >= 3) return local.slice(0, 12);
+
+  // Fallback: Nominatim geocoding for cities not in our list
+  try {
+    const url =
+      `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(query)}` +
+      `&limit=8&featuretype=city&addressdetails=1`;
+    const resp = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    if (!resp.ok) return local;
+    const results = await resp.json();
+    const geocoded = results
+      .filter(r => r.lat && r.lon)
+      .map(r => ({
+        id:      `geo-${r.place_id}`,
+        name:    r.address?.city ?? r.address?.town ?? r.address?.village ?? r.name,
+        state:   r.address?.state ?? r.address?.county ?? '',
+        country: r.address?.country ?? '',
+        lat:     parseFloat(r.lat),
+        lng:     parseFloat(r.lon),
+      }))
+      .filter(r => r.name);
+    return [...local, ...geocoded].slice(0, 12);
+  } catch {
+    return local;
+  }
 }
 
 // -------------------------------------------------------------
@@ -260,14 +323,23 @@ export async function markNotificationRead() {
 // -------------------------------------------------------------
 // AI / Gemini  POST /api/gemini/ask?question=&city=
 // -------------------------------------------------------------
-export async function sendAIMessage(message, city = 'Pune') {
+export async function sendAIMessage(message, city = '') {
   const { data } = await http.post('/gemini/ask', null, {
     params: { question: message, city },
   });
+  let rawContent = data.answer || 'No response from AI.';
+
+  // Strip markdown hashes (### Header -> Header) and asterisks (***bold*** -> bold)
+  let cleanContent = rawContent
+    .replace(/^#{1,6}\s+/gm, '')       // Remove leading markdown header hashes
+    .replace(/\*{2,3}([^*]+)\*{2,3}/g, '$1') // Remove ***bold italic*** and **bold**
+    .replace(/\*([^*]+)\*/g, '$1')     // Remove *italic*
+    .replace(/^\s*\*\s+/gm, '- ');     // Convert asterisk bullet points to clean dashes
+
   return {
     id:        Date.now(),
     role:      'assistant',
-    content:   data.answer || 'No response from AI.',
+    content:   cleanContent,
     timestamp: new Date().toISOString(),
   };
 }
@@ -289,7 +361,7 @@ export function getAISuggestions() {
 // Export  GET /api/export/report?city=&fmt=csv|pdf
 // -------------------------------------------------------------
 export async function exportCSV(rows, city) {
-  city = city || 'Pune';
+  city = city || 'unknown';
   try {
     const response = await http.get('/export/report', {
       params: { city, fmt: 'csv' },
@@ -303,7 +375,7 @@ export async function exportCSV(rows, city) {
 }
 
 export async function exportPDF(rows, city) {
-  city = city || 'Pune';
+  city = city || 'unknown';
   try {
     const response = await http.get('/export/report', {
       params: { city, fmt: 'pdf' },
@@ -384,7 +456,7 @@ function normStation(raw) {
     name:       raw.name,
     code:       (raw.id || '').toString().toUpperCase().slice(0, 8) || '--',
     city:       raw.city  || raw.name,
-    state:      raw.state || 'India',
+    state:      raw.state || '',
     lat:        raw.latitude  ?? raw.lat,
     lng:        raw.longitude ?? raw.lng,
     distance:   raw.distance_km ?? raw.distance ?? 0,

@@ -14,10 +14,13 @@ router = APIRouter(prefix="/gemini", tags=["Gemini"])
 
 
 def _build_prompt(question: str, city: str | None, metrics: dict | None) -> str:
-    ctx = f"Current environmental metrics for {city}: {metrics}" if metrics else "No city metrics available."
+    ctx = f"Current environmental metrics for {city}: {metrics}" if (metrics and city and city != "World") else "Global environmental overview."
     return (
-        "You are AirHealth India, an assistant that explains air quality and health risk "
-        "in clear language for people in Indian cities.\n"
+        "You are AirHealth Assistant, an expert environmental and air quality assistant.\n"
+        "Explain air quality, pollutant levels (PM2.5, PM10, NO2, O3, CO, SO2), and health impacts "
+        "in clean, clear, professional language.\n"
+        "IMPORTANT FORMATTING INSTRUCTION: Do NOT use markdown symbols such as asterisks (*** or **) or heading hashtags (##, ###). "
+        "Format headers simply with plain text lines or standard capitalization, and use clean bullet dashes (-) without bold asterisks.\n"
         f"{ctx}\n\nUser question: {question}"
     )
 
@@ -25,18 +28,20 @@ def _build_prompt(question: str, city: str | None, metrics: dict | None) -> str:
 def _fallback_answer(question: str, city: str | None, metrics: dict | None) -> str:
     if not metrics:
         return (
-            "I could not reach the AI model just now. Check current AQI on the dashboard "
-            "and limit outdoor exertion if the category is Unhealthy or worse."
+            "I could not reach the live AI service at this moment. "
+            "Please check current AQI values directly on the map or dashboard. "
+            "If AQI is above 100, sensitive individuals should reduce prolonged outdoor exertion. "
+            "If above 150, everyone should consider wearing a mask outdoors."
         )
     aqi = metrics.get("aqi")
     pm25 = metrics.get("pm25")
-    city_label = city or "your city"
+    city_label = city if (city and city != "World") else "your area"
     return (
-        f"Live AI is unavailable, so here is a local summary for {city_label}: "
-        f"average AQI is {aqi}, PM2.5 is {pm25} µg/m³. "
-        "Sensitive groups should reduce prolonged outdoor exposure when AQI is above 100. "
-        f"Your question was: {question}"
+        f"Live AI is currently taking longer than usual. For {city_label}: "
+        f"recorded AQI is {aqi}, PM2.5 is {pm25} µg/m³. "
+        "When AQI exceeds 100, limit strenuous outdoor activity."
     )
+
 
 
 def _call_gemini(prompt: str) -> str:
@@ -44,32 +49,33 @@ def _call_gemini(prompt: str) -> str:
     if not settings.gemini_api_key:
         raise RuntimeError("Gemini API key not configured")
 
-    try:
-        from google import genai
+    models_to_try = [settings.gemini_model, "gemini-3.6-flash", "gemini-3.7-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    seen = set()
+    models = [m for m in models_to_try if m and not (m in seen or seen.add(m))]
 
-        client = genai.Client(api_key=settings.gemini_api_key)
-        response = client.models.generate_content(
-            model=settings.gemini_model,
-            contents=prompt,
-        )
-        text = getattr(response, "text", None)
-        if text:
-            return text
-    except Exception:
-        pass
+    last_error = None
+    for model in models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            data = http_post_json(
+                url,
+                params={"key": settings.gemini_api_key},
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                headers={"Content-Type": "application/json"},
+                timeout=20.0,
+            )
+            candidates = data.get("candidates") or []
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts and "text" in parts[0]:
+                    return parts[0]["text"]
+        except Exception as exc:
+            last_error = exc
+            continue
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent"
-    )
-    data = http_post_json(
-        url,
-        params={"key": settings.gemini_api_key},
-        json={"contents": [{"parts": [{"text": prompt}]}]},
-        headers={"Content-Type": "application/json"},
-        timeout=20.0,
-    )
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    if last_error:
+        raise last_error
+    raise RuntimeError("No candidate text returned by Gemini")
 
 
 @router.post("/ask", summary="Ask Gemini a question with context")

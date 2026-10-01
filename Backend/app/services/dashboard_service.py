@@ -153,6 +153,7 @@ def get_dashboard(lat: float, lon: float) -> dict[str, Any]:
             "location": {
                 "city": loc.get("city") or "Unknown",
                 "state": loc.get("state") or "",
+                "country": loc.get("country") or "",
                 "distance_km": loc.get("distance_km") or 0.0,
             },
             "air_quality": aq,

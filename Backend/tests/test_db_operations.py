@@ -48,8 +48,12 @@ def test_insert_and_select() -> None:
         # Verify retrieval.
         loc_from_db = session.query(Location).filter_by(id=loc.id).one()
         st_from_db = session.query(MonitoringStation).filter_by(id=st.id).one()
-
         assert loc_from_db.name == "Testville"
         assert st_from_db.location_id == loc.id
+
+        # Clean up inserted test records so DB is kept clean
+        session.delete(st)
+        session.delete(loc)
+        session.commit()
     finally:
         session.close()

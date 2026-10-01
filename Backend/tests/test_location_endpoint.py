@@ -14,15 +14,15 @@ from sqlalchemy.orm import sessionmaker
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 from Backend.app.main import create_app
 from Backend.app.database import Base, engine, SessionLocal
-from Backend.models.location import Location
-from Backend.models.monitoring_station import MonitoringStation
+from Backend.app.models.location import Location
+from Backend.app.models.monitoring_station import MonitoringStation
 
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     # Populate a single location/station.
     session = SessionLocal()
-    loc = Location(name="Pune", city="Pune", state="Maharashtra", country="India", latitude=18.5204, longitude=73.8567)
+    loc = Location(name="Pune", state="Maharashtra", country="India", latitude=18.5204, longitude=73.8567)
     session.add(loc)
     session.flush()  # get id
     st = MonitoringStation(location_id=loc.id, name="Test Station", latitude=18.5210, longitude=73.8570)
@@ -45,3 +45,9 @@ def test_resolve_location() -> None:
     assert data["state"] == "Maharashtra"
     # Distance should be small (within a few hundred metres)
     assert data["distance_km"] < 1
+
+    # Clean up test rows so test stations do not persist in application DB
+    clean_session = SessionLocal()
+    clean_session.query(MonitoringStation).filter_by(name="Test Station").delete()
+    clean_session.commit()
+    clean_session.close()

@@ -1,85 +1,181 @@
-import React, { createContext, useState, useEffect } from 'react';
+import React, { createContext, useState, useEffect, useCallback, useContext } from 'react';
 
 /**
- * Reverse‑geocode latitude/longitude into a human readable label using the
- * public Nominatim API. The function is intentionally lightweight and does not
- * handle caching; for production you may want to add rate‑limit handling or an
- * internal cache.
+ * Reverse-geocode latitude/longitude → human-readable label using Nominatim.
  */
 async function reverseGeocode(lat, lon) {
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`;
-    const resp = await fetch(url);
+    const resp = await fetch(url, { headers: { 'Accept-Language': 'en' } });
     if (!resp.ok) throw new Error('geocode failed');
     const data = await resp.json();
-    const { city, state, town } = data.address || {};
-    const name = city ?? town ?? '';
+    const { city, state, town, village, county, country } = data.address || {};
+    const name = city ?? town ?? village ?? county ?? '';
     const loc = [name, state].filter(Boolean).join(', ');
-    return loc || `${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+    return {
+      label:   loc || `${lat.toFixed(3)}, ${lon.toFixed(3)}`,
+      city:    name || '',
+      state:   state || '',
+      country: country || '',
+    };
   } catch {
-    return `${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+    return {
+      label:   `${lat.toFixed(3)}, ${lon.toFixed(3)}`,
+      city:    '',
+      state:   '',
+      country: '',
+    };
   }
 }
 
-// Pune as fallback
-// Default coordinates (fallback). These are used until the user grants geolocation or selects a city.
-// We keep Pune as the original default to preserve existing behaviour, but all logic now
-// references the context values so the application can shift seamlessly when the
-// user navigates away from the hard‑coded city.
-const DEFAULT_LAT = 18.5204;
-const DEFAULT_LON = 73.8567;
+/**
+ * Single source of truth for the selected location.
+ *
+ * {
+ *   city:      string   – human readable city name
+ *   state:     string   – state/province
+ *   country:   string   – country name (derived from geocode, NOT hardcoded)
+ *   lat:       number
+ *   lon:       number
+ *   label:     string   – display label (e.g. "London, England")
+ *   source:    "initial" | "search" | "current-location" | "map-click"
+ * }
+ */
+
+// World geographic centre – used only when geolocation is unavailable and no
+// city has been searched. Not tied to any specific country.
+const WORLD_CENTER_LAT = 20;
+const WORLD_CENTER_LON = 0;
+
+const DEFAULT_LOCATION = {
+  city:    '',
+  state:   '',
+  country: '',
+  lat:     WORLD_CENTER_LAT,
+  lon:     WORLD_CENTER_LON,
+  label:   'World',
+  source:  'initial',
+};
 
 export const AppContext = createContext({
-  lat: DEFAULT_LAT,
-  lon: DEFAULT_LON,
-  locationLabel: 'Pune, Maharashtra',
-  selectedCity: 'pune',
+  location: DEFAULT_LOCATION,
+  setLocation: () => {},
+  setLocationFromCoords: async () => {},
+  setLocationFromCity: () => {},
+  isLocating: false,
+  locationError: null,
+  // Legacy compat (kept so existing components don't crash before migration)
+  lat: WORLD_CENTER_LAT,
+  lon: WORLD_CENTER_LON,
+  locationLabel: 'World',
+  selectedCity: '',
   setSelectedCity: () => {},
-  // Added setters for latitude/longitude and label to allow components
-  // such as Navbar or SearchPage to update the context when a user
-  // selects a city manually or chooses to use their current location.
   setLat: () => {},
   setLon: () => {},
   setLabel: () => {},
 });
 
 export function AppProvider({ children }) {
-  const [lat, setLat] = useState(DEFAULT_LAT);
-  const [lon, setLon] = useState(DEFAULT_LON);
-  const [locationLabel, setLabel] = useState('India');
-  const [selectedCity, setSelectedCity] = useState('pune');
+  const [location, setLocationState] = useState(DEFAULT_LOCATION);
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationError, setLocationError] = useState(null);
 
+  /** Full location update – single call from anywhere */
+  const setLocation = useCallback((partial) => {
+    setLocationState(prev => ({ ...prev, ...partial }));
+  }, []);
+
+  /** Called when user clicks "Use Current Location" or coords are known */
+  const setLocationFromCoords = useCallback(async (lat, lon, source = 'current-location') => {
+    setIsLocating(true);
+    setLocationError(null);
+    try {
+      const geo = await reverseGeocode(lat, lon);
+      setLocationState({
+        city:    geo.city,
+        state:   geo.state,
+        country: geo.country,   // derived from Nominatim, not hardcoded
+        lat,
+        lon,
+        label:   geo.label,
+        source,
+      });
+    } catch {
+      setLocationState(prev => ({
+        ...prev,
+        lat,
+        lon,
+        label:  'Current Location',
+        source,
+      }));
+    } finally {
+      setIsLocating(false);
+    }
+  }, []);
+
+  /** Called when user picks a city from the search / city list */
+  const setLocationFromCity = useCallback((cityObj) => {
+    // cityObj: { id, name, state, country, lat, lng }
+    setLocationState({
+      city:    cityObj.name,
+      state:   cityObj.state  || '',
+      country: cityObj.country || '',
+      lat:     cityObj.lat,
+      lon:     cityObj.lng ?? cityObj.lon,
+      label:   [cityObj.name, cityObj.country].filter(Boolean).join(', '),
+      source:  'search',
+    });
+  }, []);
+
+  // Attempt geolocation on mount (non-blocking).
+  // If denied or unavailable we silently stay at World centre.
   useEffect(() => {
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
       pos => {
-        const { latitude, longitude } = pos.coords;
-        setLat(latitude);
-        setLon(longitude);
-        // Fetch a human‑readable label for the coordinates
-        reverseGeocode(latitude, longitude).then(setLabel).catch(() => setLabel('Current location'));
+        setLocationFromCoords(pos.coords.latitude, pos.coords.longitude, 'current-location');
       },
       () => {
-        // Permission denied or unavailable -- stay on Pune default
+        // Permission denied – keep world centre default.
       },
       { enableHighAccuracy: false, timeout: 6000 }
     );
-  }, []);
+  }, [setLocationFromCoords]);
+
+  // -------------------------------------------------------------------------
+  // Legacy compat shims – remove gradually as components are updated
+  // -------------------------------------------------------------------------
+  const legacySetLat   = useCallback((lat)   => setLocation({ lat }),   [setLocation]);
+  const legacySetLon   = useCallback((lon)   => setLocation({ lon }),   [setLocation]);
+  const legacySetLabel = useCallback((label) => setLocation({ label }), [setLocation]);
+  const legacySetCity  = useCallback((cityId) => setLocation({ city: cityId }), [setLocation]);
 
   return (
     <AppContext.Provider
       value={{
-        lat,
-        lon,
-        locationLabel,
-        selectedCity,
-        setSelectedCity,
-        setLat,
-        setLon,
-        setLabel,
+        location,
+        setLocation,
+        setLocationFromCoords,
+        setLocationFromCity,
+        isLocating,
+        locationError,
+        // Legacy compat
+        lat:           location.lat,
+        lon:           location.lon,
+        locationLabel: location.label,
+        selectedCity:  location.city?.toLowerCase() || '',
+        setSelectedCity: legacySetCity,
+        setLat:   legacySetLat,
+        setLon:   legacySetLon,
+        setLabel: legacySetLabel,
       }}
     >
       {children}
     </AppContext.Provider>
   );
+}
+
+/** Convenience hook */
+export function useAppContext() {
+  return useContext(AppContext);
 }

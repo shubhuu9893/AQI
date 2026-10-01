@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AppContext } from '../context/AppContext';
-import { Search, MapPin, Activity, Clock, X, ArrowRight } from 'lucide-react';
+import { Search, MapPin, Activity, Clock, X, ArrowRight, Navigation } from 'lucide-react';
 import { getCities, getStations } from '../services/api';
 import AQIStatusBadge from '../components/common/AQIStatusBadge';
 import { useLocalStorage } from '../hooks/useLocalStorage';
@@ -9,36 +9,42 @@ import { useLocalStorage } from '../hooks/useLocalStorage';
 const MAX_RECENT = 5;
 
 export default function SearchPage() {
-  const navigate       = useNavigate();
-  const { setSelectedCity, setLabel, setLat, setLon } = useContext(AppContext);
-  const inputRef       = useRef(null);
-  const [query, setQuery]           = useState('');
-  const [cities, setCities]         = useState([]);
-  const [stations, setStations]     = useState([]);
-  const [loading, setLoading]       = useState(false);
-  const [recentSearches, setRecent] = useLocalStorage('recent-searches', []);
+  const navigate = useNavigate();
+  const { setLocationFromCity, setLocationFromCoords, isLocating } = useContext(AppContext);
+  const inputRef = useRef(null);
+
+  const [query,          setQuery]    = useState('');
+  const [cities,         setCities]   = useState([]);
+  const [stations,       setStations] = useState([]);
+  const [loading,        setLoading]  = useState(false);
+  const [locError,       setLocError] = useState(null);
+  const [recentSearches, setRecent]   = useLocalStorage('recent-searches', []);
 
   useEffect(() => {
     inputRef.current?.focus();
-    Promise.all([getCities(), getStations()]).then(([c, s]) => {
-      setCities(c);
-      setStations(s);
-    });
+    // Load city list and a broad set of stations for search
+    Promise.all([getCities(), getStations({ radiusKm: 20000 }).catch(() => [])])
+      .then(([c, s]) => {
+        setCities(c);
+        setStations(s);
+      });
   }, []);
 
   const filteredCities = useMemo(() => {
     if (!query) return [];
     const q = query.toLowerCase();
     return cities.filter(c =>
-      c.name.toLowerCase().includes(q) || c.state.toLowerCase().includes(q)
-    ).slice(0, 8);
+      c.name.toLowerCase().includes(q) ||
+      (c.state ?? '').toLowerCase().includes(q) ||
+      (c.country ?? '').toLowerCase().includes(q)
+    ).slice(0, 10);
   }, [query, cities]);
 
   const filteredStations = useMemo(() => {
     if (!query) return [];
     const q = query.toLowerCase();
     return stations.filter(s =>
-      s.name.toLowerCase().includes(q) || s.city.toLowerCase().includes(q)
+      s.name.toLowerCase().includes(q) || (s.city ?? '').toLowerCase().includes(q)
     ).slice(0, 6);
   }, [query, stations]);
 
@@ -51,24 +57,51 @@ export default function SearchPage() {
     });
   };
 
-   // Navigate to dashboard for a selected city.  In addition to setting the query
-   // parameter, we also update the AppContext so that any component relying on
-   // lat/lon (e.g., Map or Navbar) immediately reflects the chosen location.
-   const goToCity = city => {
-     addRecent({ id: city.id, type: 'city', name: city.name, sub: city.state });
-     setSelectedCity(city.id);
-     setLabel(`${city.name}, ${city.state}`);
-     // Update coordinates in context
-     if (setLat && setLon) {
-       setLat(city.lat ?? 0);
-       setLon(city.lng ?? 0);
-     }
-     navigate(`/dashboard?city=${encodeURIComponent(city.id)}`);
-   };
+  // Navigate to dashboard for a city – updates unified context + URL
+  const goToCity = (city) => {
+    addRecent({ id: city.id, type: 'city', name: city.name, sub: city.state });
+    // Update the single source of truth
+    setLocationFromCity(city);
+    navigate(`/dashboard?city=${encodeURIComponent(city.id)}`);
+  };
+
+  // Go to a recent city search (re-uses stored id to find full city object)
+  const goToRecentCity = (recent) => {
+    const city = cities.find(c => c.id === recent.id);
+    if (city) {
+      goToCity(city);
+    } else {
+      // City data not loaded yet – navigate with URL param, dashboard will sync
+      navigate(`/dashboard?city=${encodeURIComponent(recent.id)}`);
+    }
+  };
 
   const goToStation = (station) => {
     addRecent({ id: station.id, type: 'station', name: station.name, sub: station.city });
     navigate(`/station/${station.id}`);
+  };
+
+  // Use current location
+  const handleCurrentLocation = async () => {
+    setLocError(null);
+    if (!navigator.geolocation) {
+      setLocError('Geolocation is not supported by your browser.');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        await setLocationFromCoords(pos.coords.latitude, pos.coords.longitude, 'current-location');
+        navigate('/dashboard');
+      },
+      (err) => {
+        if (err.code === 1) {
+          setLocError('Location permission denied. Please allow location access in browser settings.');
+        } else {
+          setLocError('Unable to determine your location. Please try again.');
+        }
+      },
+      { enableHighAccuracy: false, timeout: 8000 }
+    );
   };
 
   return (
@@ -88,7 +121,7 @@ export default function SearchPage() {
           type="search"
           value={query}
           onChange={e => setQuery(e.target.value)}
-          placeholder="Search cities, states, or stations..."
+          placeholder="Search cities, states, or stations…"
           className="input"
           style={{ paddingLeft: 44, paddingRight: query ? 40 : 14, fontSize: 'var(--text-base)', height: 52 }}
           aria-label="Search cities and stations"
@@ -105,6 +138,24 @@ export default function SearchPage() {
         )}
       </div>
 
+      {/* Current location button */}
+      <button
+        className="btn btn-secondary btn-md"
+        onClick={handleCurrentLocation}
+        disabled={isLocating}
+        style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+      >
+        <Navigation size={16} color="var(--primary)" />
+        {isLocating ? 'Detecting location…' : '📍 Use Current Location'}
+      </button>
+
+      {/* Location error */}
+      {locError && (
+        <div style={{ padding: '10px 14px', background: 'var(--danger-light)', borderRadius: 'var(--radius-md)', color: 'var(--danger-dark)', fontSize: 'var(--text-sm)', border: '1px solid var(--danger)' }}>
+          {locError}
+        </div>
+      )}
+
       {/* Recent searches */}
       {!query && recentSearches.length > 0 && (
         <div className="card" style={{ overflow: 'hidden' }}>
@@ -117,7 +168,7 @@ export default function SearchPage() {
           {recentSearches.map(r => (
             <button
               key={r.id}
-              onClick={() => r.type === 'station' ? navigate(`/station/${r.id}`) : navigate('/dashboard')}
+              onClick={() => r.type === 'station' ? navigate(`/station/${r.id}`) : goToRecentCity(r)}
               className="dropdown-item"
               style={{ width: '100%', padding: '10px 16px' }}
             >
@@ -160,11 +211,9 @@ export default function SearchPage() {
                   <MapPin size={16} color="var(--primary)" />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>{city.name}</div>
-                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>{city.state}, India</div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, color: 'var(--text-primary)' }}>AQI {city.aqi}</span>
-                    <AQIStatusBadge aqi={city.aqi} size="xs" />
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+                      {[city.state, city.country].filter(Boolean).join(', ')}
+                    </div>
                   </div>
                   <ArrowRight size={14} color="var(--text-muted)" />
                 </button>
@@ -185,14 +234,20 @@ export default function SearchPage() {
                   style={{ width: '100%', padding: '12px 16px' }}
                   onClick={() => goToStation(station)}
                 >
-                  <Activity size={16} color={station.category.color} />
+                  <Activity size={16} color={station.category?.color ?? 'var(--primary)'} />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>{station.name}</div>
-                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>{station.city} ? {station.distance} km away</div>
+                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>{station.city}</div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, color: station.category.color }}>AQI {station.aqi}</span>
-                    <AQIStatusBadge aqi={station.aqi} size="xs" />
+                    {station.aqi !== null && station.aqi !== undefined && (
+                      <>
+                        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, color: station.category?.color ?? 'var(--text-primary)' }}>
+                          AQI {station.aqi}
+                        </span>
+                        <AQIStatusBadge aqi={station.aqi} size="xs" />
+                      </>
+                    )}
                   </div>
                   <ArrowRight size={14} color="var(--text-muted)" />
                 </button>
